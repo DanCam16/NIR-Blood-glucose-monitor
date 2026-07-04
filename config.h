@@ -8,21 +8,27 @@
 #define PHOTODIODE_ANALOG_PIN    A0    // Amplified photodiode signal from LM358
 #define OLED_SDA_PIN             A4    // OLED I2C SDA
 #define OLED_SCL_PIN             A5    // OLED I2C SCL
-#define IR_LED_PWM_PIN           3     // Optional PWM control for IR LED
+#define IR_LED_PWM_PIN           3     // PWM control for IR LED (constant PWM current drive)
 #define BATTERY_ADC_PIN          A2    // Battery voltage monitoring
 #define REFERENCE_VOLTAGE        5.0   // Arduino reference voltage (5V)
 
 // ===== ADC CONFIGURATION =====
 #define ADC_RESOLUTION           10    // 10-bit ADC (0-1023)
 #define ADC_MAX_VALUE            1023  // Max ADC value
-#define SAMPLING_RATE            1000  // Samples per second (Hz)
-#define SAMPLING_INTERVAL        1     // milliseconds (1000/SAMPLING_RATE)
+#define SAMPLING_RATE            200   // Samples per second (Hz) - improved from 1000Hz
+#define SAMPLING_INTERVAL        5     // milliseconds (1000/SAMPLING_RATE)
 
 // ===== SENSOR CONFIGURATION =====
 #define IR_LED_WAVELENGTH        940   // IR LED wavelength in nanometers
 #define PHOTODIODE_TYPE          "PIN" // PIN or APD photodiode
 #define LM358_GAIN               10.0  // Op-amp gain (1 + Rf/Rin)
+#define LM358_NOTES              "Low-cost design choice. For improved SNR consider OPT101, OPA381, OPA380, MCP6002"
 #define SIGNAL_THRESHOLD         50    // Minimum signal threshold (ADC counts)
+
+// ===== LED DRIVE CONFIGURATION =====
+#define LED_DRIVE_MODE           "CONSTANT_PWM"  // Provides constant electrical drive (not optical output)
+#define LED_PWM_VALUE            200  // PWM value (0-255)
+#define NOTES_LED_DRIVE          "PWM provides constant electrical drive. Optical intensity changes with LED temperature and battery voltage."
 
 // ===== FILTERING CONFIGURATION =====
 #define FILTER_ENABLE            true
@@ -30,6 +36,14 @@
 #define HIGH_PASS_CUTOFF         0.05  // Hz (removes baseline drift)
 #define MOVING_AVG_WINDOW        5     // Moving average window size (samples)
 #define IIR_ALPHA                0.1   // IIR filter coefficient (0-1, lower = more filtering)
+#define USE_MEDIAN_FILTER        true  // Enable robust median filtering
+#define USE_EMA_FILTER           true  // Enable exponential moving average
+#define EMA_ALPHA                0.15  // Exponential moving average smoothing factor
+#define USE_AMBIENT_LIGHT_CANCELLATION  true  // Enable ambient light removal
+
+// ===== AMBIENT LIGHT CANCELLATION =====
+#define ALC_HOLD_TIME            50    // milliseconds - time to stabilize before measurement
+#define ALC_NOTES                "Measurement sequence: LED ON -> ADC -> LED OFF -> ADC -> Intensity = ON - OFF"
 
 // ===== OLED DISPLAY CONFIGURATION =====
 #define OLED_ADDRESS             0x3C  // I2C address for 0.96" OLED
@@ -43,6 +57,7 @@
 #define MIN_GLUCOSE_REFERENCE    70    // mg/dL (lower calibration point)
 #define MAX_GLUCOSE_REFERENCE    300   // mg/dL (upper calibration point)
 #define CALIBRATION_SAMPLES      50    // Samples to average per calibration point
+#define CALIBRATION_METHOD       "ABSORBANCE_BASED"  // Uses Modified Beer-Lambert Law
 
 // ===== POWER MANAGEMENT CONFIGURATION =====
 #define BATTERY_MAX_VOLTAGE      4.2   // Li-ion max voltage
@@ -50,6 +65,7 @@
 #define BATTERY_ADC_DIVIDER      2     // Voltage divider ratio
 #define LOW_BATTERY_THRESHOLD    3.2   // Voltage threshold for warning
 #define TP4056_CHARGE_COMPLETE   2     // Digital pin for charge complete indicator (optional)
+#define BATTERY_MEASUREMENT_REF  1.1   // Use internal 1.1V reference for more robust battery measurement
 
 // ===== DATA LOGGING CONFIGURATION =====
 #define DATA_LOGGING_ENABLE      true
@@ -63,5 +79,9 @@
 // ===== CALIBRATION DATA STORAGE =====
 #define CALIBRATION_EEPROM_ADDR 0     // EEPROM starting address for calibration data
 #define CALIBRATION_DATA_SIZE    32    // Bytes to store calibration coefficients
+
+// ===== DEVICE NOTES =====
+#define DEVICE_NOTES             "Research prototype for non-invasive glucose estimation"
+#define DISCLAIMER               "Estimates glucose after calibration against reference glucometer. Multiple factors affect signal: water, hemoglobin, skin pigmentation, tissue thickness, temperature, motion."
 
 #endif // CONFIG_H
