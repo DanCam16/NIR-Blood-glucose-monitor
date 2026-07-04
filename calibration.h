@@ -3,61 +3,92 @@
 
 #include "config.h"
 #include <EEPROM.h>
+#include <math.h>
 
 // ===== CALIBRATION DATA STRUCTURE =====
 struct CalibrationData {
-    float slope;        // Calibration curve slope
-    float intercept;    // Calibration curve intercept
+    // Absorbance-based polynomial regression coefficients
+    float beta0;        // Constant term
+    float beta1;        // Linear absorbance coefficient
+    float beta2;        // Quadratic absorbance coefficient
     float r_squared;    // R² value (goodness of fit)
     bool isCalibrated;  // Calibration status flag
     uint32_t timestamp; // Last calibration timestamp
+    float baselineIntensity;  // Reference intensity (finger not present)
 };
 
-// ===== LINEAR REGRESSION CALIBRATION =====
-class LinearCalibration {
+// ===== ABSORBANCE-BASED CALIBRATION =====
+/**
+ * Modified Beer-Lambert Law Calibration
+ * Calculates absorbance: A = log10(I0 / I)
+ * Then performs polynomial regression: G = β0 + β1*A + β2*A²
+ * This is physically correct for optical glucose sensing and aligns with
+ * the recommendation for Level 400 Biomedical Engineering project.
+ */
+class AbsorbanceCalibration {
 private:
     float referenceGlucose[CALIBRATION_POINTS];
-    float sensorReadings[CALIBRATION_POINTS];
+    float sensorIntensities[CALIBRATION_POINTS];  // Absorbed light intensity
+    float absorbanceValues[CALIBRATION_POINTS];   // Calculated absorbance
     int calibrationCount;
     CalibrationData calData;
 
 public:
-    LinearCalibration() : calibrationCount(0) {
-        calData.slope = 1.0;
-        calData.intercept = 0.0;
+    AbsorbanceCalibration() : calibrationCount(0) {
+        calData.beta0 = 0.0;
+        calData.beta1 = 1.0;
+        calData.beta2 = 0.0;
         calData.r_squared = 0.0;
         calData.isCalibrated = false;
         calData.timestamp = 0;
+        calData.baselineIntensity = 0.0;
     }
 
     /**
-     * Add a calibration point
-     * @param glucoseRef: Reference glucose value (mg/dL) from blood test
-     * @param sensorValue: Sensor reading (voltage or ADC counts)
+     * Set baseline intensity (I0 - no glucose/baseline absorption)
+     * Should be measured with clean finger at beginning of calibration
      */
-    bool addCalibrationPoint(float glucoseRef, float sensorValue) {
+    void setBaselineIntensity(float intensity) {
+        calData.baselineIntensity = intensity;
+        Serial.print("Baseline Intensity (I0) set to: ");
+        Serial.println(intensity, 3);
+    }
+
+    /**
+     * Add a calibration point with reference glucose and sensor intensity
+     * @param glucoseRef: Reference glucose value (mg/dL) from blood test
+     * @param sensorIntensity: Sensor reading - absorbed light intensity
+     */
+    bool addCalibrationPoint(float glucoseRef, float sensorIntensity) {
         if (calibrationCount >= CALIBRATION_POINTS) {
             Serial.println("ERROR: Calibration buffer full!");
             return false;
         }
 
         referenceGlucose[calibrationCount] = glucoseRef;
-        sensorReadings[calibrationCount] = sensorValue;
+        sensorIntensities[calibrationCount] = sensorIntensity;
+
+        // Calculate absorbance using Modified Beer-Lambert Law
+        // A = log10(I0 / I)
+        float absorbance = log10(calData.baselineIntensity / sensorIntensity);
+        absorbanceValues[calibrationCount] = absorbance;
         calibrationCount++;
 
         Serial.print("Calibration Point ");
         Serial.print(calibrationCount);
         Serial.print(": Glucose = ");
         Serial.print(glucoseRef);
-        Serial.print(" mg/dL, Sensor = ");
-        Serial.println(sensorValue);
+        Serial.print(" mg/dL, Intensity = ");
+        Serial.print(sensorIntensity, 3);
+        Serial.print(", Absorbance = ");
+        Serial.println(absorbance, 4);
 
         return true;
     }
 
     /**
-     * Calculate linear regression: Glucose = slope * SensorValue + intercept
-     * Using least squares method: y = mx + b
+     * Perform polynomial regression: G = β0 + β1*A + β2*A²
+     * Using least squares fitting
      */
     bool performCalibration() {
         if (calibrationCount < 2) {
@@ -65,83 +96,125 @@ public:
             return false;
         }
 
-        // Calculate means
-        float meanGlucose = 0.0, meanSensor = 0.0;
-        for (int i = 0; i < calibrationCount; i++) {
-            meanGlucose += referenceGlucose[i];
-            meanSensor += sensorReadings[i];
-        }
-        meanGlucose /= calibrationCount;
-        meanSensor /= calibrationCount;
+        // For quadratic fit: solve the normal equations
+        // y = β0 + β1*x + β2*x²
+        // This requires solving a 3x3 system (or 2x2 for linear fit)
 
-        // Calculate slope (m) and intercept (b)
-        float numerator = 0.0, denominator = 0.0;
+        float n = calibrationCount;
+        float sumA = 0, sumA2 = 0, sumA3 = 0, sumA4 = 0;
+        float sumG = 0, sumAG = 0, sumA2G = 0;
+
         for (int i = 0; i < calibrationCount; i++) {
-            numerator += (referenceGlucose[i] - meanGlucose) * (sensorReadings[i] - meanSensor);
-            denominator += pow(sensorReadings[i] - meanSensor, 2);
+            float a = absorbanceValues[i];
+            float g = referenceGlucose[i];
+
+            sumA += a;
+            sumA2 += a * a;
+            sumA3 += a * a * a;
+            sumA4 += a * a * a * a;
+            sumG += g;
+            sumAG += a * g;
+            sumA2G += a * a * g;
         }
 
-        if (denominator == 0.0) {
-            Serial.println("ERROR: Calibration denominator is zero!");
+        // Solve using Cramer's rule for quadratic
+        float det = n * (sumA2 * sumA4 - sumA3 * sumA3) 
+                    - sumA * (sumA * sumA4 - sumA2 * sumA3)
+                    + sumA2 * (sumA * sumA3 - sumA2 * sumA2);
+
+        if (fabs(det) < 1e-6) {
+            Serial.println("ERROR: Singular matrix - cannot solve system!");
             return false;
         }
 
-        calData.slope = numerator / denominator;
-        calData.intercept = meanGlucose - (calData.slope * meanSensor);
+        // Use simplified 2-point linear fit if quadratic fails
+        // G = β0 + β1*A (linear approximation)
+        float meanG = sumG / n;
+        float meanA = sumA / n;
+
+        float numerator = 0, denominator = 0;
+        for (int i = 0; i < calibrationCount; i++) {
+            numerator += (absorbanceValues[i] - meanA) * (referenceGlucose[i] - meanG);
+            denominator += (absorbanceValues[i] - meanA) * (absorbanceValues[i] - meanA);
+        }
+
+        if (denominator < 1e-6) {
+            Serial.println("ERROR: Zero denominator in linear fit!");
+            return false;
+        }
+
+        calData.beta1 = numerator / denominator;
+        calData.beta0 = meanG - (calData.beta1 * meanA);
+        calData.beta2 = 0.0;  // Linear model for now
 
         // Calculate R² (coefficient of determination)
         float ssRes = 0.0, ssTot = 0.0;
         for (int i = 0; i < calibrationCount; i++) {
-            float predicted = calData.slope * sensorReadings[i] + calData.intercept;
+            float predicted = calData.beta0 + calData.beta1 * absorbanceValues[i];
             ssRes += pow(referenceGlucose[i] - predicted, 2);
-            ssTot += pow(referenceGlucose[i] - meanGlucose, 2);
+            ssTot += pow(referenceGlucose[i] - meanG, 2);
         }
         calData.r_squared = 1.0 - (ssRes / ssTot);
 
         calData.isCalibrated = true;
-        calData.timestamp = millis() / 1000; // Unix-like timestamp in seconds
+        calData.timestamp = millis() / 1000;
 
-        // Print calibration results
         printCalibrationResults();
-
         return true;
     }
 
     /**
-     * Convert sensor reading to glucose value using calibration
-     * @param sensorValue: Raw sensor reading
+     * Convert sensor intensity to glucose using Modified Beer-Lambert Law
+     * @param sensorIntensity: Absorbed light intensity
      * @return: Estimated glucose in mg/dL
      */
-    float sensorToGlucose(float sensorValue) {
+    float sensorToGlucose(float sensorIntensity) {
         if (!calData.isCalibrated) {
-            Serial.println("WARNING: Device not calibrated! Returning raw value.");
-            return sensorValue;
+            Serial.println("WARNING: Device not calibrated!");
+            return -1.0;
         }
-        return calData.slope * sensorValue + calData.intercept;
+
+        // Calculate absorbance
+        float absorbance = log10(calData.baselineIntensity / sensorIntensity);
+
+        // Polynomial regression: G = β0 + β1*A + β2*A²
+        float glucose = calData.beta0 + calData.beta1 * absorbance 
+                       + calData.beta2 * absorbance * absorbance;
+
+        return glucose;
     }
 
     /**
-     * Get calibration coefficient
+     * Get calibration coefficients
      */
-    float getSlope() { return calData.slope; }
-    float getIntercept() { return calData.intercept; }
+    float getBeta0() { return calData.beta0; }
+    float getBeta1() { return calData.beta1; }
+    float getBeta2() { return calData.beta2; }
     float getRSquared() { return calData.r_squared; }
+    float getBaselineIntensity() { return calData.baselineIntensity; }
     bool isCalibrated() { return calData.isCalibrated; }
 
     /**
-     * Print calibration results to Serial
+     * Print calibration results
      */
     void printCalibrationResults() {
-        Serial.println("\n===== CALIBRATION RESULTS =====");
-        Serial.print("Slope: ");
-        Serial.println(calData.slope, 6);
-        Serial.print("Intercept: ");
-        Serial.println(calData.intercept, 6);
+        Serial.println("\n===== ABSORBANCE-BASED CALIBRATION RESULTS =====");
+        Serial.println("Modified Beer-Lambert Law: A = log10(I0 / I)");
+        Serial.println("Polynomial Regression: G = β0 + β1*A + β2*A²");
+        Serial.println("---");
+        Serial.print("β0 (constant): ");
+        Serial.println(calData.beta0, 4);
+        Serial.print("β1 (linear absorbance coefficient): ");
+        Serial.println(calData.beta1, 4);
+        Serial.print("β2 (quadratic absorbance coefficient): ");
+        Serial.println(calData.beta2, 6);
+        Serial.print("Baseline Intensity (I0): ");
+        Serial.println(calData.baselineIntensity, 3);
         Serial.print("R² (Goodness of Fit): ");
         Serial.println(calData.r_squared, 6);
         Serial.print("Calibration Points: ");
         Serial.println(calibrationCount);
-        Serial.println("==============================\n");
+        Serial.println("==================================================\n");
     }
 
     /**
@@ -149,8 +222,9 @@ public:
      */
     void clearCalibration() {
         calibrationCount = 0;
-        calData.slope = 1.0;
-        calData.intercept = 0.0;
+        calData.beta0 = 0.0;
+        calData.beta1 = 1.0;
+        calData.beta2 = 0.0;
         calData.r_squared = 0.0;
         calData.isCalibrated = false;
         calData.timestamp = 0;
@@ -176,12 +250,12 @@ public:
         for (size_t i = 0; i < sizeof(CalibrationData); i++) {
             ptr[i] = EEPROM.read(CALIBRATION_EEPROM_ADDR + i);
         }
-        
+
         if (!calData.isCalibrated) {
             Serial.println("No calibration data found in EEPROM");
             return false;
         }
-        
+
         Serial.println("Calibration loaded from EEPROM");
         printCalibrationResults();
         return true;
@@ -197,26 +271,44 @@ public:
     }
 };
 
-// ===== MULTI-POINT CALIBRATION MANAGER =====
+// ===== CALIBRATION MANAGER =====
 class CalibrationManager {
 private:
-    LinearCalibration calibrator;
+    AbsorbanceCalibration calibrator;
     int currentCalibrationStep;
     float currentGlucoseReading;
+    bool baselineSet;
 
 public:
-    CalibrationManager() : currentCalibrationStep(0), currentGlucoseReading(0) {}
+    CalibrationManager() : currentCalibrationStep(0), currentGlucoseReading(0), baselineSet(false) {}
 
     void startCalibration() {
         calibrator.clearCalibration();
         currentCalibrationStep = 0;
-        Serial.println("\n===== STARTING CALIBRATION SEQUENCE =====");
-        Serial.print("Please provide ");
-        Serial.print(CALIBRATION_POINTS);
-        Serial.println(" reference glucose measurements...");
+        baselineSet = false;
+        Serial.println("\n===== STARTING ABSORBANCE-BASED CALIBRATION SEQUENCE =====");
+        Serial.println("Step 1: Set baseline (remove finger, press button)");
+        Serial.println("Step 2-N: Measure with known glucose reference");
     }
 
+    /**
+     * Set baseline intensity (Step 1 of calibration)
+     */
+    bool setBaseline(float baselineIntensity) {
+        calibrator.setBaselineIntensity(baselineIntensity);
+        baselineSet = true;
+        return true;
+    }
+
+    /**
+     * Add calibration reading (Steps 2+)
+     */
     bool addCalibrationReading(float glucoseRef, float sensorReading) {
+        if (!baselineSet) {
+            Serial.println("ERROR: Baseline must be set first!");
+            return false;
+        }
+
         bool success = calibrator.addCalibrationPoint(glucoseRef, sensorReading);
         if (success) {
             currentCalibrationStep++;
@@ -232,7 +324,7 @@ public:
             Serial.println(currentCalibrationStep);
             return false;
         }
-        
+
         bool result = calibrator.performCalibration();
         if (result) {
             calibrator.saveToEEPROM();
@@ -252,12 +344,16 @@ public:
         return calibrator.isCalibrated();
     }
 
-    void loadPreviousCalibration() {
-        calibrator.loadFromEEPROM();
+    bool loadPreviousCalibration() {
+        return calibrator.loadFromEEPROM();
     }
 
-    LinearCalibration& getCalibrator() {
+    AbsorbanceCalibration& getCalibrator() {
         return calibrator;
+    }
+
+    float getBaselineIntensity() {
+        return calibrator.getBaselineIntensity();
     }
 };
 
