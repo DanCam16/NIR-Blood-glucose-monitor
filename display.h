@@ -58,9 +58,11 @@ public:
     }
 
     /**
-     * Display main glucose reading screen
+     * Display comprehensive glucose reading screen with absorbance
+     * Shows: Intensity, Absorbance, Glucose, Battery
      */
-    void showGlucoseReading(float glucoseValue, int batteryPercent, bool isCalibrated) {
+    void showGlucoseReading(float glucoseValue, float absorbance, 
+                           float intensity, int batteryPercent, bool isCalibrated) {
         if (!isInitialized) return;
         if (millis() - lastUpdateTime < OLED_UPDATE_RATE) return;
 
@@ -75,47 +77,77 @@ public:
         // Draw horizontal line
         display.drawLine(0, 8, OLED_WIDTH, 8, SSD1306_WHITE);
 
+        // IR Intensity
+        display.setCursor(0, 12);
+        display.print("IR Intensity: ");
+        display.println((int)intensity);
+
+        // Absorbance (Modified Beer-Lambert Law)
+        display.setCursor(0, 20);
+        display.print("Absorbance: ");
+        display.println(absorbance, 3);
+
         // Glucose value (large font)
         display.setTextSize(2);
-        display.setCursor(15, 15);
+        display.setCursor(0, 30);
         if (glucoseValue >= 0) {
             display.print(glucoseValue, 1);
         } else {
-            display.println("---");
+            display.print("---");
         }
-
-        // Unit and status
         display.setTextSize(1);
-        display.setCursor(90, 20);
-        display.println("mg/dL");
+        display.setCursor(75, 35);
+        display.println("mmol/L");
 
-        // Status line
-        display.setCursor(0, 35);
+        // Status and Battery on same line
+        display.setCursor(0, 48);
         if (!isCalibrated) {
-            display.println("Status: NOT CALIBRATED");
-            display.setTextColor(SSD1306_WHITE);
+            display.println("NOT CALIBRATED");
         } else {
-            display.println("Status: OK");
+            display.print("OK");
         }
 
-        // Battery indicator
-        display.setCursor(0, 45);
-        display.print("Battery: ");
+        display.setCursor(60, 48);
+        display.print("Bat: ");
         display.print(batteryPercent);
         display.println("%");
 
-        // Signal quality indicator
-        display.setCursor(75, 45);
-        display.println("[====]");
-
         // Timestamp
         display.setTextSize(1);
-        display.setCursor(0, 55);
-        display.print("Time: ");
+        display.setCursor(0, 56);
+        display.print("T: ");
         display.println(millis() / 1000);
 
         display.display();
         lastUpdateTime = millis();
+    }
+
+    /**
+     * Display baseline calibration screen
+     */
+    void showBaselineCalibrationScreen() {
+        if (!isInitialized) return;
+
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(0, 0);
+        display.println("BASELINE SETUP");
+
+        display.drawLine(0, 8, OLED_WIDTH, 8, SSD1306_WHITE);
+
+        display.setCursor(0, 15);
+        display.println("Step 1: Remove finger");
+        display.setCursor(0, 25);
+        display.println("from sensor.");
+        display.setCursor(0, 35);
+        display.println("Press button when");
+        display.setCursor(0, 45);
+        display.println("ready to measure");
+        display.setCursor(0, 55);
+        display.println("baseline intensity.");
+
+        display.display();
     }
 
     /**
@@ -169,6 +201,8 @@ public:
 
         // Scale data to fit on display
         float range = maxVal - minVal;
+        if (range < 0.001) range = 1.0;  // Prevent division by very small number
+        
         int graphHeight = 40;
         int graphY = 15;
         int graphWidth = OLED_WIDTH;
@@ -183,6 +217,10 @@ public:
 
             int y1 = graphY + graphHeight - (int)(((val1 - minVal) / range) * graphHeight);
             int y2 = graphY + graphHeight - (int)(((val2 - minVal) / range) * graphHeight);
+
+            // Constrain y values to graph bounds
+            y1 = constrain(y1, graphY, graphY + graphHeight);
+            y2 = constrain(y2, graphY, graphY + graphHeight);
 
             display.drawLine(10 + i - 1, y1, 10 + i, y2, SSD1306_WHITE);
         }
@@ -296,7 +334,7 @@ public:
 
         for (int i = 0; i < itemCount && i < 7; i++) {
             display.setCursor(5, 15 + i * 8);
-            
+
             if (i == selectedIndex) {
                 display.println(">");
                 display.setCursor(15, 15 + i * 8);
@@ -305,6 +343,40 @@ public:
                 display.setCursor(15, 15 + i * 8);
                 display.println(menuItems[i]);
             }
+        }
+
+        display.display();
+    }
+
+    /**
+     * Display device information and calibration status
+     */
+    void showDeviceInfo(float r_squared, float baselineIntensity, bool isCalibrated) {
+        if (!isInitialized) return;
+
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(0, 0);
+        display.println("DEVICE INFO");
+        display.drawLine(0, 8, OLED_WIDTH, 8, SSD1306_WHITE);
+
+        display.setCursor(0, 12);
+        display.println("Research Prototype");
+
+        display.setCursor(0, 22);
+        if (isCalibrated) {
+            display.println("CALIBRATED");
+            display.setCursor(0, 30);
+            display.print("R^2: ");
+            display.println(r_squared, 4);
+            display.setCursor(0, 38);
+            display.print("I0: ");
+            display.println(baselineIntensity, 1);
+        } else {
+            display.println("NOT CALIBRATED");
+            display.setCursor(0, 30);
+            display.println("Run calibration");
         }
 
         display.display();
